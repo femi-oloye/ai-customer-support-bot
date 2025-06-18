@@ -1,30 +1,33 @@
 # app.py
+
 import streamlit as st
 from dotenv import load_dotenv
 import os
 import tempfile
-import re
 from openai import OpenAI
 from rag import load_and_index_pdf, ask_doc_question
 from agent import agent
 
+# Load environment variables
 load_dotenv()
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
+# --- Streamlit UI ---
 st.set_page_config(page_title="AI Support Bot", layout="centered")
 st.title("🤖 AI Customer Support Assistant")
 
-with st.expander("ℹ️ About", expanded=False):
+with st.expander("ℹ️ About this Bot", expanded=False):
     st.markdown("""
-    - ✅ Multi-turn chat
-    - 🔍 PDF Question Answering
-    - 🧠 CRM query from Airtable
-    - 📞 Human handoff detection
+    This AI-powered assistant handles customer support queries using:
+    - 🔁 Multi-turn GPT conversations  
+    - 📄 Internal document (PDF) retrieval (RAG)  
+    - 📬 Airtable CRM integration  
+    - 🧑‍💼 Human escalation handoff  
     """)
 
-# Upload PDF
+# --- Upload PDF ---
 st.markdown("### 📄 Upload Internal Docs")
-uploaded_file = st.file_uploader("Upload support manual or guide (PDF)", type="pdf")
+uploaded_file = st.file_uploader("Upload a product manual, FAQ, or internal guide (PDF)", type="pdf")
 
 vectordb = None
 if uploaded_file:
@@ -33,30 +36,28 @@ if uploaded_file:
             tmp.write(uploaded_file.read())
             tmp_path = tmp.name
         vectordb = load_and_index_pdf(tmp_path)
-        st.success("✅ PDF indexed for QA")
+        st.success("✅ Document indexed for Q&A!")
     except Exception as e:
-        st.error(f"❌ PDF load error: {e}")
+        st.error(f"❌ Could not process PDF: {e}")
 
-# Session state
+# --- Chat History Setup ---
+st.markdown("---")
+st.markdown("### 💬 Chat with the Support Bot")
+
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 
-# Detects if input is an email question
-def contains_email(text):
-    return bool(re.search(r"\b[\w.-]+@[\w.-]+\.\w{2,4}\b", text))
-
-# Detects PDF style question
-def is_pdf_question(text):
-    keywords = ["document", "manual", "guide", "how to", "based on", "policy", "according to"]
-    return any(k in text.lower() for k in keywords)
-
-# Chat UI
-st.markdown("### 💬 Ask your question")
-
-with st.form("chat_form", clear_on_submit=True):
+# --- Form Input ---
+with st.form(key="chat_form", clear_on_submit=True):
     user_input = st.text_input("You:", key="user_input")
     submitted = st.form_submit_button("Send")
 
+# --- Email Detection Helper ---
+def contains_email(text: str) -> bool:
+    import re
+    return bool(re.search(r"[\w\.-]+@[\w\.-]+", text))
+
+# --- Response Routing ---
 if submitted and user_input:
     st.session_state.chat_history.append(("User", user_input))
 
@@ -64,9 +65,11 @@ if submitted and user_input:
         if contains_email(user_input):
             print("🔍 Routed to: Airtable Agent")
             response = agent.run(user_input)
-        elif vectordb and is_pdf_question(user_input):
+
+        elif vectordb:
             print("📄 Routed to: PDF RAG")
             response = ask_doc_question(vectordb, user_input)
+
         else:
             print("🤖 Routed to: GPT Fallback")
             messages = [{"role": "system", "content": "You are a helpful AI assistant."}]
@@ -74,12 +77,13 @@ if submitted and user_input:
                 messages.append({"role": "user" if role == "User" else "assistant", "content": msg})
             res = client.chat.completions.create(model="gpt-4", messages=messages)
             response = res.choices[0].message.content.strip()
+
     except Exception as e:
         response = f"❌ Error: {e}"
 
     st.session_state.chat_history.append(("Bot", response))
 
-# Display history
+# --- Display Conversation ---
 for role, msg in st.session_state.chat_history:
-    with st.chat_message(role if role.lower() == "user" else "assistant"):
+    with st.chat_message(role.lower() if role.lower() == "user" else "assistant"):
         st.markdown(msg)
