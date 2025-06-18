@@ -4,30 +4,32 @@ import streamlit as st
 from dotenv import load_dotenv
 import os
 import tempfile
+import requests
 from openai import OpenAI
 from rag import load_and_index_pdf, ask_doc_question
 from agent import agent
 
-# Load environment variables
+# --- Load API keys ---
 load_dotenv()
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+SLACK_WEBHOOK_URL = os.getenv("SLACK_WEBHOOK_URL")  # Add this in your .env
 
-# --- Streamlit UI ---
+# --- Streamlit UI config ---
 st.set_page_config(page_title="AI Support Bot", layout="centered")
 st.title("🤖 AI Customer Support Assistant")
 
 with st.expander("ℹ️ About this Bot", expanded=False):
     st.markdown("""
-    This AI-powered assistant handles customer support queries using:
-    - 🔁 Multi-turn GPT conversations  
-    - 📄 Internal document (PDF) retrieval (RAG)  
-    - 📬 Airtable CRM integration  
-    - 🧑‍💼 Human escalation handoff  
+    This AI assistant supports customers with:
+    - 🤖 Multi-turn GPT conversations  
+    - 📄 PDF Retrieval (RAG)  
+    - 👨 Human handoff with Slack alerts  
+    - 📡 Airtable CRM data access  
     """)
 
-# --- Upload PDF ---
+# --- PDF Upload ---
 st.markdown("### 📄 Upload Internal Docs")
-uploaded_file = st.file_uploader("Upload a product manual, FAQ, or internal guide (PDF)", type="pdf")
+uploaded_file = st.file_uploader("Upload product manual, FAQ, or guide (PDF)", type="pdf")
 
 vectordb = None
 if uploaded_file:
@@ -40,50 +42,55 @@ if uploaded_file:
     except Exception as e:
         st.error(f"❌ Could not process PDF: {e}")
 
-# --- Chat History Setup ---
+# --- Chat Section ---
 st.markdown("---")
-st.markdown("### 💬 Chat with the Support Bot")
+st.markdown("### 💬 Chat with the Bot")
 
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 
-# --- Form Input ---
 with st.form(key="chat_form", clear_on_submit=True):
     user_input = st.text_input("You:", key="user_input")
     submitted = st.form_submit_button("Send")
 
-# --- Email Detection Helper ---
-def contains_email(text: str) -> bool:
-    import re
-    return bool(re.search(r"[\w\.-]+@[\w\.-]+", text))
+# --- Escalation Triggers ---
+escalation_keywords = ["refund", "cancel", "speak to human", "human", "agent", "talk to agent"]
 
-# --- Response Routing ---
 if submitted and user_input:
+    # Append user input
     st.session_state.chat_history.append(("User", user_input))
 
-    try:
-        if contains_email(user_input):
-            print("🔍 Routed to: Airtable Agent")
-            response = agent.run(user_input)
+    # Check for escalation keywords
+    if any(k in user_input.lower() for k in escalation_keywords):
+        bot_reply = "🔔 Escalation triggered. A human support agent will contact you shortly."
 
-        elif vectordb:
-            print("📄 Routed to: PDF RAG")
-            response = ask_doc_question(vectordb, user_input)
+        # Send to Slack
+        try:
+            slack_message = {
+                "text": f"🚨 Escalation triggered from Streamlit Bot\nMessage: *{user_input}*"
+            }
+            requests.post(SLACK_WEBHOOK_URL, json=slack_message)
+            print("✅ Slack escalation sent.")
+        except Exception as e:
+            bot_reply += f"\n⚠️ Slack error: {e}"
+    else:
+        try:
+            # Use Airtable-aware Agent
+            agent_reply = agent.run(user_input)
 
-        else:
-            print("🤖 Routed to: GPT Fallback")
-            messages = [{"role": "system", "content": "You are a helpful AI assistant."}]
-            for role, msg in st.session_state.chat_history:
-                messages.append({"role": "user" if role == "User" else "assistant", "content": msg})
-            res = client.chat.completions.create(model="gpt-4", messages=messages)
-            response = res.choices[0].message.content.strip()
+            # Use RAG if PDF is uploaded
+            if vectordb:
+                doc_answer = ask_doc_question(vectordb, user_input)
+                bot_reply = f"{agent_reply}\n\n📄 From Docs:\n{doc_answer}"
+            else:
+                bot_reply = agent_reply
+        except Exception as e:
+            bot_reply = f"❌ Agent error: {e}"
 
-    except Exception as e:
-        response = f"❌ Error: {e}"
+    # Append bot response
+    st.session_state.chat_history.append(("Bot", bot_reply))
 
-    st.session_state.chat_history.append(("Bot", response))
-
-# --- Display Conversation ---
-for role, msg in st.session_state.chat_history:
+# --- Display Chat ---
+for role, text in st.session_state.chat_history:
     with st.chat_message(role.lower() if role.lower() == "user" else "assistant"):
-        st.markdown(msg)
+        st.markdown(text)
