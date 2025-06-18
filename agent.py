@@ -1,5 +1,4 @@
 # agent.py
-
 from langchain.chat_models import ChatOpenAI
 from langchain.agents import initialize_agent
 from tools import airtable_tool
